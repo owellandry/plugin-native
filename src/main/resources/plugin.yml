@@ -1,0 +1,9 @@
+name: CubeplexBackpack
+version: '${version}'
+main: cubeplex.backpack.BackpackPlugin
+api-version: '1.21'
+commands:
+  mochila:
+    description: Abre la mochila o da una mochila al jugador
+    usage: /<command> [give]
+    aliases: [backpack]
