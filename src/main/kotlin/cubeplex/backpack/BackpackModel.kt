@@ -1,10 +1,23 @@
 package cubeplex.backpack
 
-import org.joml.Matrix4f
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
+import org.joml.Vector3f
 
+/**
+ * Modelo 3D de la mochila (35 piezas). Datos extraídos de mochila.md.
+ */
 object BackpackModel {
 
     data class Part(val textureValue: String, val matrix: FloatArray)
+
+    /** Offset del block_display raíz (equivalente al ~-0.5 ~-0.5 ~-0.5 del comando). */
+    val ROOT_OFFSET = Transformation(
+        Vector3f(-0.5f, -0.5f, -0.5f),
+        Quaternionf(),
+        Vector3f(1f, 1f, 1f),
+        Quaternionf()
+    )
 
     val PARTS: List<Part> = listOf(
         Part("eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvODMwMGFmNzgxZmYyOWMzMzkwN2E4NDMzZmUyNTliNmU0MDEyMDRkNzEyZDExYjBhODJhNDZmNTllNzRkYzkwIn19fQ==", floatArrayOf(0.5f, 0.0f, 0.0f, 0.25015625f, 0.0f, 0.5f, 0.0f, 0.2444046918f, 0.0f, 0.0f, 1.0f, -0.2190624917f, 0.0f, 0.0f, 0.0f, 1.0f)),
@@ -44,13 +57,18 @@ object BackpackModel {
         Part("eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvMjZiYWI5YTlmZWJiOTc0NTllYjkzODVhN2I3N2E2NzcwZDFmOGVjMjc5YTc4ZmUwMjI4MTg3ZDU2ZjExZTUzYyJ9fX0=", floatArrayOf(0.25f, 0.0f, 0.0f, -0.18734375f, 0.0f, 0.6563f, 0.0f, -0.0040953082f, 0.0f, 0.0f, 0.0031f, -0.4690624917f, 0.0f, 0.0f, 0.0f, 1.0f)),
     )
 
-    fun matrixFromSummon(values: FloatArray): Matrix4f {
+    /**
+     * El comando /summon guarda la matriz como 4 filas:
+     * [sx, 0, 0, tx], [0, sy, 0, ty], [0, 0, sz, tz], [0, 0, 0, 1]
+     * Paper usa Transformation (translation, rotation, scale) — no Matrix4f crudo.
+     */
+    fun transformationFromSummon(values: FloatArray): Transformation {
         require(values.size == 16)
-        return Matrix4f(
-            values[0], values[1], values[2], values[3],
-            values[4], values[5], values[6], values[7],
-            values[8], values[9], values[10], values[11],
-            values[12], values[13], values[14], values[15]
+        return Transformation(
+            Vector3f(values[3], values[7], values[11]),
+            Quaternionf(),
+            Vector3f(values[0], values[5], values[10]),
+            Quaternionf()
         )
     }
 }

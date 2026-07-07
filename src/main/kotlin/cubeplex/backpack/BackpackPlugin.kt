@@ -1,6 +1,5 @@
 package cubeplex.backpack
 
-import org.bukkit.Bukkit
 import org.bukkit.plugin.java.JavaPlugin
 
 class BackpackPlugin : JavaPlugin() {
@@ -16,7 +15,6 @@ class BackpackPlugin : JavaPlugin() {
         visualManager = BackpackVisualManager(this)
         getCommand("mochila")?.setExecutor(BackpackCommand(this))
         server.pluginManager.registerEvents(BackpackListener(this), this)
-        Bukkit.getScheduler().runTaskTimer(this, Runnable { visualManager.tickAll() }, 1L, 1L)
         logger.info("CubeplexBackpack activado!")
     }
 
