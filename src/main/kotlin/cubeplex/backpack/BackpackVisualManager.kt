@@ -3,80 +3,103 @@ package cubeplex.backpack
 import com.destroystokyo.paper.profile.ProfileProperty
 import org.bukkit.Bukkit
 import org.bukkit.Material
+import org.bukkit.entity.Display
+import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import org.bukkit.inventory.meta.SkullMeta
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
 import java.util.UUID
 
 class BackpackVisualManager(private val plugin: BackpackPlugin) {
 
-    // UUID del jugador → UUID de la entidad ROOT (invisible) que hace de ancla
-    private val visuals = mutableMapOf<UUID, UUID>()
+    private val visuals = mutableMapOf<UUID, List<UUID>>()
+    private val tasks  = mutableMapOf<UUID, Int>()
 
     fun hasVisual(playerId: UUID) = visuals.containsKey(playerId)
 
     fun spawn(player: Player) {
         if (hasVisual(player.uniqueId)) return
 
-        val world = player.world
+        val anchorLoc = BackpackModel.backAnchorLocation(player)
+        val rootQuat  = yawQuaternion(player)
 
-        // 1. Entidad raíz — completamente invisible, solo sirve de "vehículo"
-        //    Usamos un Interaction (sin hitbox visible) o un Marker
-        val root = world.spawn(player.location, org.bukkit.entity.Interaction::class.java) { e ->
-            e.interactionWidth = 0f
-            e.interactionHeight = 0f
-            e.addScoreboardTag(BackpackListener.ENTITY_TAG)
-            e.isPersistent = false
-        }
+        val partEntities = BackpackModel.PARTS.map { part ->
+            player.world.spawn(anchorLoc, ItemDisplay::class.java) { d ->
+                d.addScoreboardTag(BackpackListener.ENTITY_TAG)
+                d.isPersistent        = false
+                d.billboard           = Display.Billboard.FIXED
+                d.interpolationDelay  = 0
+                d.interpolationDuration = 3
+                d.setItemStack(createSkullItem(part.textureValue))
 
-        // 2. El jugador lleva al root como pasajero → se mueve con él sin TP
-        player.addPassenger(root)
-
-        // 3. Spawnear cada pieza del modelo como pasajero del root
-        BackpackModel.PARTS.forEach { part ->
-            val head = world.spawn(player.location, org.bukkit.entity.ArmorStand::class.java) { stand ->
-                stand.isVisible = false
-                stand.isSmall = true
-                stand.isMarker = true
-                stand.setGravity(false)
-                stand.isPersistent = false
-                // Aplicar textura de skull via NMS o via SkullMeta en el helmet
-                val skull = createSkullItem(part.textureValue)
-                stand.equipment.helmet = skull
-
-                // Aplicar la transformación del modelo
-                val t = BackpackModel.transformationFromSummon(part.matrix)
-                // Posicionar relativo al root con el offset de la espalda
-                val offset = org.bukkit.util.Vector(t.translation.x.toDouble(), t.translation.y.toDouble(), t.translation.z.toDouble())
-                stand.teleport(player.location.add(offset))
-                stand.addScoreboardTag(BackpackListener.ENTITY_TAG)
+                val localT = BackpackModel.transformationFromSummon(part.matrix)
+                d.transformation = Transformation(
+                    localT.translation,
+                    Quaternionf(rootQuat).mul(localT.leftRotation),
+                    localT.scale,
+                    localT.rightRotation
+                )
             }
-            root.addPassenger(head)
         }
 
-        visuals[player.uniqueId] = root.uniqueId
+        visuals[player.uniqueId] = partEntities.map { it.uniqueId }
+
+        val taskId = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
+            if (!player.isOnline) { remove(player.uniqueId); return@Runnable }
+            syncPosition(player)
+        }, 1L, 1L).taskId
+
+        tasks[player.uniqueId] = taskId
     }
+
+    fun syncPosition(player: Player) {
+        val partIds   = visuals[player.uniqueId] ?: return
+        val anchorLoc = BackpackModel.backAnchorLocation(player)
+        val rootQuat  = yawQuaternion(player)
+
+        partIds.forEachIndexed { i, id ->
+            val display = player.world.entities
+                .firstOrNull { it.uniqueId == id } as? ItemDisplay ?: return@forEachIndexed
+
+            display.teleport(anchorLoc)
+
+            val localT = BackpackModel.transformationFromSummon(BackpackModel.PARTS[i].matrix)
+            display.interpolationDelay = 0
+            display.transformation = Transformation(
+                localT.translation,
+                Quaternionf(rootQuat).mul(localT.leftRotation),
+                localT.scale,
+                localT.rightRotation
+            )
+        }
+    }
+
+    fun refreshOffset(player: Player) = syncPosition(player)
 
     fun remove(playerId: UUID) {
-        val rootId = visuals.remove(playerId) ?: return
-        val root = plugin.server.getEntity(rootId) ?: return
-
-        // Quitar todos los pasajeros (las piezas del modelo)
-        root.passengers.toList().forEach { it.remove() }
-        root.remove()
+        tasks.remove(playerId)?.let { Bukkit.getScheduler().cancelTask(it) }
+        val partIds = visuals.remove(playerId) ?: return
+        partIds.forEach { id ->
+            Bukkit.getWorlds().flatMap { it.entities }
+                .firstOrNull { it.uniqueId == id }?.remove()
+        }
     }
 
-    fun removeAll() {
-        visuals.keys.toList().forEach { remove(it) }
-    }
+    fun removeAll() = visuals.keys.toList().forEach { remove(it) }
 
-    // syncPosition y refreshOffset ya NO son necesarios — el riding lo hace automático
-    // Pero los dejamos vacíos para no romper las llamadas existentes en BackpackListener
-    fun syncPosition(player: Player) { /* no-op: passenger riding se encarga */ }
-    fun refreshOffset(player: Player) { /* no-op: passenger riding se encarga */ }
+    private fun yawQuaternion(player: Player): Quaternionf {
+        val yawRad = Math.toRadians(BackpackModel.bodyYaw(player).toDouble()).toFloat()
+        val pitchDeg = BackpackModel.bodyPitch(player)
+        return Quaternionf()
+            .rotateY(-yawRad)
+            .apply { if (pitchDeg != 0f) rotateX(Math.toRadians(pitchDeg.toDouble()).toFloat()) }
+    }
 
     private fun createSkullItem(textureValue: String): ItemStack {
         val skull = ItemStack(Material.PLAYER_HEAD)
-        val meta = skull.itemMeta as org.bukkit.inventory.meta.SkullMeta
+        val meta  = skull.itemMeta as SkullMeta
         val profile = Bukkit.createProfile(UUID.randomUUID(), null)
         profile.setProperty(ProfileProperty("textures", textureValue))
         meta.playerProfile = profile
