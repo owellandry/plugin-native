@@ -6,7 +6,8 @@ import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.entity.BlockDisplay
-import org.bukkit.entity.EntityType
+import org.bukkit.entity.Entity
+import org.bukkit.entity.Interaction
 import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -25,7 +26,6 @@ import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
 import java.util.UUID
-import java.util.Base64
 import com.destroystokyo.paper.profile.ProfileProperty
 
 class BackpackListener(private val plugin: cubeplex.backpack.BackpackPlugin) : Listener {
@@ -33,6 +33,7 @@ class BackpackListener(private val plugin: cubeplex.backpack.BackpackPlugin) : L
     companion object {
         val BACKPACK_KEY = NamespacedKey("cubeplex", "backpack")
         val ENTITY_TAG = "cubeplex_backpack"
+        val BACKPACK_ROOT_KEY = NamespacedKey("cubeplex", "backpack_root")
 
         private val activeBackpacks = mutableMapOf<UUID, UUID>()
 
@@ -108,62 +109,52 @@ class BackpackListener(private val plugin: cubeplex.backpack.BackpackPlugin) : L
         }
     }
 
-    private fun createPlayerHeadItem(textureHash: String): ItemStack {
-        val json = """{"textures":{"SKIN":{"url":"http://textures.minecraft.net/texture/$textureHash"}}}"""
-        val base64 = Base64.getEncoder().encodeToString(json.toByteArray())
-
-        val item = ItemStack(Material.PLAYER_HEAD)
-        val meta = item.itemMeta as SkullMeta
-        val profile = Bukkit.createProfile(UUID.nameUUIDFromBytes(textureHash.toByteArray()), null)
-        profile.setProperty(ProfileProperty("textures", base64))
-        meta.setPlayerProfile(profile)
-        item.itemMeta = meta
-        return item
-    }
-
-    private fun spawnBackpackEntity(player: Player) {
-        removeBackpackEntity(player)
-
+    private fun spawnBackpackVisual(player: Player): Entity? {
         val world = player.world
-        val baseLoc = player.location.clone()
+        val location = player.location.clone()
 
-        val blockDisplay = world.spawn(baseLoc, BlockDisplay::class.java) { bd ->
-            bd.addScoreboardTag(ENTITY_TAG)
-            bd.setViewRange(100f)
-            bd.block = Material.AIR.createBlockData()
-
-            val baseTranslation = Vector3f(-0.5f, -0.5f, -0.5f)
-            val baseRotation = Quaternionf(0f, 0f, 0f, 1f)
-            val baseScale = Vector3f(1f, 1f, 1f)
-            bd.transformation = Transformation(baseTranslation, baseRotation, baseScale, baseRotation)
+        val root = world.spawn(location, BlockDisplay::class.java) { display ->
+            display.addScoreboardTag(ENTITY_TAG)
+            display.isPersistent = true
         }
 
         for (part in BACKPACK_PARTS) {
-            val headItem = createPlayerHeadItem(part.textureHash)
+            val skull = createPlayerHead(part.textureHash)
 
-            val itemDisplay = world.spawn(baseLoc, ItemDisplay::class.java) { id ->
-                id.setItemStack(headItem)
-                id.itemDisplayTransform = org.bukkit.entity.ItemDisplay.ItemDisplayTransform.NONE
-                id.setViewRange(100f)
+            val itemDisplay = world.spawn(location, ItemDisplay::class.java) { display ->
+                display.setItemStack(skull)
+                display.itemDisplayTransform = ItemDisplay.ItemDisplayTransform.NONE
+                display.isPersistent = true
 
                 val translation = Vector3f(part.tx, part.ty, part.tz)
                 val leftRotation = Quaternionf(part.lrx, part.lry, part.lrz, part.lrw)
                 val scale = Vector3f(part.sx, part.sy, part.sz)
                 val rightRotation = Quaternionf(part.rrx, part.rry, part.rrz, part.rrw)
 
-                id.transformation = Transformation(translation, leftRotation, scale, rightRotation)
+                display.transformation = Transformation(translation, leftRotation, scale, rightRotation)
             }
-            blockDisplay.addPassenger(itemDisplay)
+            root.addPassenger(itemDisplay)
         }
 
-        Bukkit.getScheduler().runTaskLater(plugin, Runnable {
-            if (player.isValid && blockDisplay.isValid) {
-                player.addPassenger(blockDisplay)
-            }
-        }, 1L)
+        val interactionLoc = location.clone().add(0.0, 0.5, 0.0)
+        val interaction = world.spawn(interactionLoc, Interaction::class.java) { inter ->
+            inter.addScoreboardTag(ENTITY_TAG)
+            inter.isPersistent = true
+            inter.persistentDataContainer.set(BACKPACK_ROOT_KEY, PersistentDataType.STRING, root.uniqueId.toString())
+        }
 
-        activeBackpacks[player.uniqueId] = blockDisplay.uniqueId
-        plugin.logger.info("Spawned backpack entity for ${player.name} with ${BACKPACK_PARTS.size} parts")
+        activeBackpacks[player.uniqueId] = root.uniqueId
+        return root
+    }
+
+    private fun createPlayerHead(textureHash: String): ItemStack {
+        val item = ItemStack(Material.PLAYER_HEAD)
+        val meta = item.itemMeta as SkullMeta
+        val profile = Bukkit.createProfile(UUID.nameUUIDFromBytes(textureHash.toByteArray()), null)
+        profile.setProperty(ProfileProperty("textures", textureHash))
+        meta.setPlayerProfile(profile)
+        item.itemMeta = meta
+        return item
     }
 
     private fun removeBackpackEntity(player: Player) {
@@ -177,7 +168,7 @@ class BackpackListener(private val plugin: cubeplex.backpack.BackpackPlugin) : L
         val chestplate = player.inventory.chestplate
         if (isBackpackItem(chestplate)) {
             if (!activeBackpacks.containsKey(player.uniqueId)) {
-                spawnBackpackEntity(player)
+                spawnBackpackVisual(player)
             }
         } else {
             removeBackpackEntity(player)
@@ -188,8 +179,12 @@ class BackpackListener(private val plugin: cubeplex.backpack.BackpackPlugin) : L
     fun onPlayerInteractEntity(event: PlayerInteractEntityEvent) {
         if (!event.rightClicked.scoreboardTags.contains(ENTITY_TAG)) return
         event.isCancelled = true
-        plugin.backpackManager.openInventory(event.player)
-        event.player.sendMessage(Component.text("\u00A7a\u00A1Mochila abierta!"))
+
+        val clicked = event.rightClicked
+        if (clicked is Interaction) {
+            plugin.backpackManager.openInventory(event.player)
+            event.player.sendMessage(Component.text("\u00A7a\u00A1Mochila abierta!"))
+        }
     }
 
     @EventHandler
