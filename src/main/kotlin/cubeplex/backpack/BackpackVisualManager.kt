@@ -12,16 +12,21 @@ import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.meta.SkullMeta
 import org.bukkit.persistence.PersistentDataType
+import org.bukkit.scheduler.BukkitTask
 import java.util.UUID
 
 class BackpackVisualManager(private val plugin: BackpackPlugin) {
 
     data class ActiveVisual(
         val rootDisplayId: UUID,
-        val spawnTag: String
+        val spawnTag: String,
+        var lastBodyYaw: Float = Float.NaN,
+        var lastSneaking: Boolean = false,
+        var lastHeight: Double = -1.0
     )
 
     private val activeVisuals = mutableMapOf<UUID, ActiveVisual>()
+    private var syncTask: BukkitTask? = null
 
     fun hasVisual(playerId: UUID): Boolean = activeVisuals.containsKey(playerId)
 
@@ -30,7 +35,8 @@ class BackpackVisualManager(private val plugin: BackpackPlugin) {
         if (existing != null) {
             val root = Bukkit.getEntity(existing.rootDisplayId) as? BlockDisplay
             if (root != null && root.isValid) {
-                mountOnPlayer(player, root)
+                syncPosition(player)
+                ensureSyncTask()
                 return
             }
             activeVisuals.remove(player.uniqueId)
@@ -50,7 +56,7 @@ class BackpackVisualManager(private val plugin: BackpackPlugin) {
             display.addScoreboardTag(BackpackListener.ENTITY_TAG)
             display.addScoreboardTag(spawnTag)
             configureDisplay(display)
-            display.transformation = BackpackModel.ROOT_OFFSET
+            display.transformation = BackpackModel.ROOT_TRANSFORMATION
         }
 
         for (part in BackpackModel.PARTS) {
@@ -65,17 +71,79 @@ class BackpackVisualManager(private val plugin: BackpackPlugin) {
         }
 
         configureDisplayTree(root)
-        mountOnPlayer(player, root)
         addInteraction(player, root)
 
-        activeVisuals[player.uniqueId] = ActiveVisual(root.uniqueId, spawnTag)
+        val visual = ActiveVisual(root.uniqueId, spawnTag)
+        activeVisuals[player.uniqueId] = visual
+        syncPosition(player)
+        ensureSyncTask()
         return root
     }
 
-    private fun mountOnPlayer(player: Player, root: BlockDisplay) {
-        if (root.vehicle == player) return
+    /** Llamado desde PlayerMoveEvent — mismo tick que el jugador, sin delay de scheduler. */
+    fun syncPosition(player: Player) {
+        val visual = activeVisuals[player.uniqueId] ?: return
+        val root = Bukkit.getEntity(visual.rootDisplayId) as? BlockDisplay ?: return
+        if (!root.isValid || !player.isOnline) return
+
+        applyPosition(player, root)
+        visual.lastBodyYaw = BackpackModel.bodyYaw(player)
+        visual.lastSneaking = player.isSneaking
+        visual.lastHeight = player.height
+    }
+
+    fun refreshOffset(player: Player) {
+        syncPosition(player)
+    }
+
+    private fun applyPosition(player: Player, root: BlockDisplay) {
         root.leaveVehicle()
-        player.addPassenger(root)
+        val anchor = BackpackModel.backAnchorLocation(player)
+        root.teleport(anchor)
+        root.setRotation(BackpackModel.bodyYaw(player), BackpackModel.bodyPitch(player))
+        root.transformation = BackpackModel.ROOT_TRANSFORMATION
+    }
+
+    /**
+     * Solo para cuando el cuerpo gira en el sitio (sin mover XYZ).
+     * El movimiento lo cubre PlayerMoveEvent en el mismo tick.
+     */
+    private fun ensureSyncTask() {
+        if (syncTask != null) return
+        syncTask = Bukkit.getScheduler().runTaskTimer(plugin, Runnable {
+            if (activeVisuals.isEmpty()) {
+                stopSyncTask()
+                return@Runnable
+            }
+            for ((playerId, visual) in activeVisuals.toMap()) {
+                val player = Bukkit.getPlayer(playerId) ?: continue
+                if (!player.isOnline || !isBackpackEquipped(player)) continue
+                val root = Bukkit.getEntity(visual.rootDisplayId) as? BlockDisplay ?: continue
+                if (!root.isValid) continue
+
+                val bodyYaw = BackpackModel.bodyYaw(player)
+                val sneaking = player.isSneaking
+                val height = player.height
+                val poseChanged = visual.lastBodyYaw.isNaN()
+                    || kotlin.math.abs(bodyYaw - visual.lastBodyYaw) > 0.01f
+                    || sneaking != visual.lastSneaking
+                    || kotlin.math.abs(height - visual.lastHeight) > 0.001
+
+                if (poseChanged) {
+                    applyPosition(player, root)
+                    visual.lastBodyYaw = bodyYaw
+                    visual.lastSneaking = sneaking
+                    visual.lastHeight = height
+                } else {
+                    root.setRotation(bodyYaw, BackpackModel.bodyPitch(player))
+                }
+            }
+        }, 1L, 1L)
+    }
+
+    private fun stopSyncTask() {
+        syncTask?.cancel()
+        syncTask = null
     }
 
     private fun addInteraction(player: Player, root: BlockDisplay) {
@@ -110,6 +178,7 @@ class BackpackVisualManager(private val plugin: BackpackPlugin) {
 
     fun remove(playerId: UUID) {
         val visual = activeVisuals.remove(playerId) ?: return
+        if (activeVisuals.isEmpty()) stopSyncTask()
         val entity = Bukkit.getEntity(visual.rootDisplayId)
         if (entity != null) {
             removeEntityTree(entity)
@@ -124,9 +193,12 @@ class BackpackVisualManager(private val plugin: BackpackPlugin) {
     }
 
     fun removeAll() {
+        stopSyncTask()
         val copy = activeVisuals.toMap()
         activeVisuals.clear()
-        copy.keys.forEach { remove(it) }
+        copy.values.forEach { visual ->
+            Bukkit.getEntity(visual.rootDisplayId)?.let { removeEntityTree(it) }
+        }
     }
 
     private fun isBackpackEquipped(player: Player): Boolean {

@@ -8,7 +8,9 @@ import org.bukkit.NamespacedKey
 import org.bukkit.entity.Interaction
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
+import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.player.PlayerMoveEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
@@ -17,6 +19,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerRespawnEvent
+import org.bukkit.event.player.PlayerToggleSneakEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 import com.destroystokyo.paper.event.player.PlayerArmorChangeEvent
@@ -110,6 +113,27 @@ class BackpackListener(private val plugin: BackpackPlugin) : Listener {
     @EventHandler
     fun onPlayerQuit(event: PlayerQuitEvent) {
         plugin.visualManager.remove(event.player.uniqueId)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlayerMove(event: PlayerMoveEvent) {
+        val player = event.player
+        if (!isBackpackItem(player.inventory.chestplate)) return
+        if (!plugin.visualManager.hasVisual(player.uniqueId)) return
+
+        val from = event.from
+        val to = event.to ?: return
+        if (from.x == to.x && from.y == to.y && from.z == to.z) return
+
+        plugin.visualManager.syncPosition(player)
+    }
+
+    @EventHandler
+    fun onToggleSneak(event: PlayerToggleSneakEvent) {
+        if (!isBackpackItem(event.player.inventory.chestplate)) return
+        Bukkit.getScheduler().runTask(plugin, Runnable {
+            plugin.visualManager.refreshOffset(event.player)
+        })
     }
 
     @EventHandler

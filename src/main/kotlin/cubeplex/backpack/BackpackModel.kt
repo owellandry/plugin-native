@@ -1,8 +1,12 @@
 package cubeplex.backpack
 
+import org.bukkit.Location
+import org.bukkit.entity.Player
 import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Modelo 3D de la mochila (35 piezas). Datos extraídos de mochila.md.
@@ -11,13 +15,54 @@ object BackpackModel {
 
     data class Part(val textureValue: String, val matrix: FloatArray)
 
-    /** Offset del block_display raíz (equivalente al ~-0.5 ~-0.5 ~-0.5 del comando). */
-    val ROOT_OFFSET = Transformation(
-        Vector3f(-0.5f, -0.5f, -0.5f),
+    /** Jugador de pie: 1.8 alto, agachado: 1.5. Elytra ~61% de altura desde los pies. */
+    private const val ELYTRA_HEIGHT_RATIO = 0.61
+    /** Distancia detrás del torso (de pie). */
+    private const val BACK_DEPTH = 0.40
+    /** Subida fina respecto al punto elytra. */
+    private const val HEIGHT_OFFSET = 0.04
+    /** Extra hacia atrás al agacharse (compensa que la inclinación la empuja al frente). */
+    private const val SNEAK_EXTRA_BACK = 0.08
+    /** Centro vertical del modelo respecto al block_display raíz (piezas ty ≈ -0.004…0.87). */
+    private const val MODEL_CENTER_Y = 0.43
+    /** Inclinación del torso al agacharse (grados), similar al modelo del jugador. */
+    private const val SNEAK_BODY_PITCH = 12f
+
+    val ROOT_TRANSFORMATION = Transformation(
+        Vector3f(0f, 0f, 0f),
         Quaternionf(),
         Vector3f(1f, 1f, 1f),
         Quaternionf()
     )
+
+    fun bodyYaw(player: Player): Float = player.bodyYaw
+
+    fun bodyPitch(player: Player): Float = if (player.isSneaking) SNEAK_BODY_PITCH else 0f
+
+    /**
+     * Posición en la espalda (elytra). Usa bodyYaw/bodyPitch para seguir el torso, no la cabeza.
+     * Al agacharse baja con player.height e inclina el torso hacia adelante.
+     */
+    fun backAnchorLocation(player: Player): Location {
+        val yaw = bodyYaw(player)
+        val pitch = bodyPitch(player)
+        val loc = player.location.clone()
+        val yawRad = Math.toRadians(yaw.toDouble())
+        val pitchRad = Math.toRadians(pitch.toDouble())
+
+        val depth = BACK_DEPTH + if (player.isSneaking) SNEAK_EXTRA_BACK else 0.0
+        val anchorY = player.height * ELYTRA_HEIGHT_RATIO - MODEL_CENTER_Y + HEIGHT_OFFSET
+        val horizontalBack = depth * cos(pitchRad)
+        val liftFromLean = depth * sin(pitchRad)
+
+        val dx = sin(yawRad) * horizontalBack
+        val dz = -cos(yawRad) * horizontalBack
+
+        loc.add(dx, anchorY + liftFromLean, dz)
+        loc.yaw = yaw
+        loc.pitch = pitch
+        return loc
+    }
 
     val PARTS: List<Part> = listOf(
         Part("eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvODMwMGFmNzgxZmYyOWMzMzkwN2E4NDMzZmUyNTliNmU0MDEyMDRkNzEyZDExYjBhODJhNDZmNTllNzRkYzkwIn19fQ==", floatArrayOf(0.5f, 0.0f, 0.0f, 0.25015625f, 0.0f, 0.5f, 0.0f, 0.2444046918f, 0.0f, 0.0f, 1.0f, -0.2190624917f, 0.0f, 0.0f, 0.0f, 1.0f)),
